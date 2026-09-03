@@ -460,7 +460,10 @@ impl Reader {
         } else {
             self.edges()
         };
-        Ok((self.nodes(), edges))
+        let nodes = self.nodes();
+        // The map is dead weight once its surviving subset has been copied out.
+        self.nodes = HashMap::new();
+        Ok((nodes, edges))
     }
 }
 
