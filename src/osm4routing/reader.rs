@@ -410,10 +410,12 @@ impl Reader {
     }
 
     /// Converts all ways to edges by splitting at intersections.
-    fn edges(&self) -> Vec<Edge> {
-        let mut edges = Vec::with_capacity(self.ways.len());
-        for way in &self.ways {
-            self.split_way(way, &mut edges);
+    fn edges(&mut self) -> Vec<Edge> {
+        // Taken, so each way is freed as it is split rather than after.
+        let ways = std::mem::take(&mut self.ways);
+        let mut edges = Vec::with_capacity(ways.len());
+        for way in ways {
+            self.split_way(&way, &mut edges);
         }
         edges
     }
@@ -453,7 +455,8 @@ impl Reader {
         self.count_nodes_uses()?;
 
         let edges = if self.should_merge_ways {
-            self.do_merge_edges(self.edges())
+            let edges = self.edges();
+            self.do_merge_edges(edges)
         } else {
             self.edges()
         };
