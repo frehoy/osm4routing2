@@ -211,6 +211,10 @@ impl EdgeProperties {
                     self.foot = FootAccessibility::Forbidden;
                     self.bike_forward = BikeAccessibility::Forbidden;
                 }
+                // Pedestrian-only infrastructure, carrying no vehicle access.
+                "platform" | "corridor" | "elevator" | "bus_stop" => {
+                    self.foot = FootAccessibility::Allowed;
+                }
                 _ => {}
             },
             "pedestrian" | "foot" => match val {
@@ -256,6 +260,22 @@ impl EdgeProperties {
             }
             "railway" => {
                 self.train = TrainAccessibility::Allowed;
+                // A platform mapped on the railway side, usually with no `highway` tag.
+                if matches!(val, "platform" | "platform_edge") {
+                    self.foot = FootAccessibility::Allowed;
+                }
+            }
+            // The mode-neutral platform tagging.
+            "public_transport" => {
+                if val == "platform" {
+                    self.foot = FootAccessibility::Allowed;
+                }
+            }
+            // Station concourses, airport piers, terminal-to-platform passages.
+            "indoor" => {
+                if matches!(val, "corridor" | "area") {
+                    self.foot = FootAccessibility::Allowed;
+                }
             }
             _ => {}
         }
@@ -366,4 +386,59 @@ fn test_update() {
     p.bike_backward = BikeAccessibility::Unknown;
     p.update_with_str("junction", "roundabout");
     assert_eq!(BikeAccessibility::Forbidden, p.bike_backward);
+}
+
+/// Platforms, concourses and lifts must survive `normalize` + `accessible`.
+#[test]
+fn test_pedestrian_transit_infrastructure_is_accessible() {
+    for (key, value) in [
+        ("highway", "platform"),
+        ("highway", "corridor"),
+        ("highway", "elevator"),
+        ("highway", "bus_stop"),
+        ("railway", "platform"),
+        ("railway", "platform_edge"),
+        ("public_transport", "platform"),
+        ("indoor", "corridor"),
+        ("indoor", "area"),
+    ] {
+        let mut p = EdgeProperties::default();
+        p.update_with_str(key, value);
+        assert_eq!(
+            FootAccessibility::Allowed,
+            p.foot,
+            "{key}={value} should be walkable"
+        );
+
+        p.normalize();
+        assert!(p.accessible(), "{key}={value} should survive normalize");
+    }
+}
+
+/// Recognising a railway platform must not make every railway walkable.
+#[test]
+fn test_plain_railway_is_not_walkable() {
+    let mut p = EdgeProperties::default();
+    p.update_with_str("railway", "rail");
+    assert_eq!(TrainAccessibility::Allowed, p.train);
+    assert_eq!(FootAccessibility::Unknown, p.foot);
+
+    p.normalize();
+    assert_eq!(FootAccessibility::Forbidden, p.foot);
+}
+
+/// An unrecognised way stays unroutable.
+#[test]
+fn test_untagged_way_is_not_accessible() {
+    for (key, value) in [
+        ("building", "yes"),
+        ("landuse", "grass"),
+        ("natural", "water"),
+        ("indoor", "room"),
+    ] {
+        let mut p = EdgeProperties::default();
+        p.update_with_str(key, value);
+        p.normalize();
+        assert!(!p.accessible(), "{key}={value} should not be routable");
+    }
 }

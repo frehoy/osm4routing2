@@ -203,8 +203,9 @@ impl Reader {
     ///
     /// # Arguments
     /// * `way` - The way to split.
-    fn split_way(&self, way: &Way) -> Vec<Edge> {
-        let mut result = Vec::new();
+    fn split_way(&self, way: &Way, result: &mut Vec<Edge>) {
+        // Where this way's edges start, so ids still number from zero per way.
+        let start = result.len();
 
         let mut source = NodeId(0);
         let mut geometry = Vec::new();
@@ -217,7 +218,7 @@ impl Reader {
                 source = node_id;
             } else if node.uses > 1 {
                 result.push(Edge {
-                    id: format!("{}-{}", way.id.0, result.len()),
+                    id: format!("{}-{}", way.id.0, result.len() - start),
                     osm_id: way.id,
                     source,
                     target: node_id,
@@ -232,7 +233,6 @@ impl Reader {
                 nodes = vec![node.id]
             }
         }
-        result
     }
 
     /// Recursively merges consecutive edges at degree-2 nodes.
@@ -402,19 +402,26 @@ impl Reader {
     ///
     /// Filters out nodes that are not used by any edge (uses <= 1).
     fn nodes(&self) -> Vec<Node> {
-        self.nodes
+        let mut nodes: Vec<Node> = self
+            .nodes
             .values()
             .filter(|node| node.uses > 1)
             .copied()
-            .collect()
+            .collect();
+        // Hash map iteration order varies per process; callers index by position.
+        nodes.sort_unstable_by_key(|node| node.id.0);
+        nodes
     }
 
     /// Converts all ways to edges by splitting at intersections.
-    fn edges(&self) -> Vec<Edge> {
-        self.ways
-            .iter()
-            .flat_map(|way| self.split_way(way))
-            .collect()
+    fn edges(&mut self) -> Vec<Edge> {
+        // Taken, so each way is freed as it is split rather than after.
+        let ways = std::mem::take(&mut self.ways);
+        let mut edges = Vec::with_capacity(ways.len());
+        for way in ways {
+            self.split_way(&way, &mut edges);
+        }
+        edges
     }
 
     /// Reads the PBF file and constructs the routing graph.
@@ -452,11 +459,15 @@ impl Reader {
         self.count_nodes_uses()?;
 
         let edges = if self.should_merge_ways {
-            self.do_merge_edges(self.edges())
+            let edges = self.edges();
+            self.do_merge_edges(edges)
         } else {
             self.edges()
         };
-        Ok((self.nodes(), edges))
+        let nodes = self.nodes();
+        // The map is dead weight once its surviving subset has been copied out.
+        self.nodes = HashMap::new();
+        Ok((nodes, edges))
     }
 }
 
@@ -534,6 +545,36 @@ fn test_split() {
     r.count_nodes_uses().unwrap();
     let edges = r.edges();
     assert_eq!(3, edges.len());
+}
+
+/// Edge ids number from zero within each way, not across the whole file.
+#[test]
+fn test_edge_ids_restart_for_each_way() {
+    let mut nodes = HashMap::new();
+    for id in 1..=5 {
+        nodes.insert(NodeId(id), Node::default());
+    }
+    let ways = vec![
+        Way {
+            id: WayId(10),
+            nodes: vec![NodeId(1), NodeId(2), NodeId(3)],
+            ..Default::default()
+        },
+        Way {
+            id: WayId(20),
+            nodes: vec![NodeId(4), NodeId(5), NodeId(2)],
+            ..Default::default()
+        },
+    ];
+    let mut r = Reader {
+        nodes,
+        ways,
+        ..Default::default()
+    };
+    r.count_nodes_uses().unwrap();
+
+    let ids: Vec<String> = r.edges().into_iter().map(|edge| edge.id).collect();
+    assert_eq!(vec!["10-0", "10-1", "20-0"], ids);
 }
 
 #[test]
@@ -629,4 +670,16 @@ fn merging_edges() {
         .read(&"src/osm4routing/test_data/ways_to_merge.osm.pbf")
         .unwrap();
     assert_eq!(1, edges.len());
+}
+
+/// Reading the same file twice must give the same graph, node for node.
+#[test]
+fn test_read_is_deterministic() {
+    let first = read("src/osm4routing/test_data/minimal.osm.pbf").unwrap();
+    let second = read("src/osm4routing/test_data/minimal.osm.pbf").unwrap();
+
+    let ids =
+        |(nodes, _): &(Vec<Node>, Vec<Edge>)| nodes.iter().map(|n| n.id.0).collect::<Vec<_>>();
+    assert_eq!(ids(&first), ids(&second));
+    assert!(ids(&first).windows(2).all(|w| w[0] < w[1]), "sorted by id");
 }
