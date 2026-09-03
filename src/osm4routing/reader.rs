@@ -203,8 +203,9 @@ impl Reader {
     ///
     /// # Arguments
     /// * `way` - The way to split.
-    fn split_way(&self, way: &Way) -> Vec<Edge> {
-        let mut result = Vec::new();
+    fn split_way(&self, way: &Way, result: &mut Vec<Edge>) {
+        // Where this way's edges start, so ids still number from zero per way.
+        let start = result.len();
 
         let mut source = NodeId(0);
         let mut geometry = Vec::new();
@@ -217,7 +218,7 @@ impl Reader {
                 source = node_id;
             } else if node.uses > 1 {
                 result.push(Edge {
-                    id: format!("{}-{}", way.id.0, result.len()),
+                    id: format!("{}-{}", way.id.0, result.len() - start),
                     osm_id: way.id,
                     source,
                     target: node_id,
@@ -232,7 +233,6 @@ impl Reader {
                 nodes = vec![node.id]
             }
         }
-        result
     }
 
     /// Recursively merges consecutive edges at degree-2 nodes.
@@ -411,10 +411,11 @@ impl Reader {
 
     /// Converts all ways to edges by splitting at intersections.
     fn edges(&self) -> Vec<Edge> {
-        self.ways
-            .iter()
-            .flat_map(|way| self.split_way(way))
-            .collect()
+        let mut edges = Vec::with_capacity(self.ways.len());
+        for way in &self.ways {
+            self.split_way(way, &mut edges);
+        }
+        edges
     }
 
     /// Reads the PBF file and constructs the routing graph.
@@ -534,6 +535,36 @@ fn test_split() {
     r.count_nodes_uses().unwrap();
     let edges = r.edges();
     assert_eq!(3, edges.len());
+}
+
+/// Edge ids number from zero within each way, not across the whole file.
+#[test]
+fn test_edge_ids_restart_for_each_way() {
+    let mut nodes = HashMap::new();
+    for id in 1..=5 {
+        nodes.insert(NodeId(id), Node::default());
+    }
+    let ways = vec![
+        Way {
+            id: WayId(10),
+            nodes: vec![NodeId(1), NodeId(2), NodeId(3)],
+            ..Default::default()
+        },
+        Way {
+            id: WayId(20),
+            nodes: vec![NodeId(4), NodeId(5), NodeId(2)],
+            ..Default::default()
+        },
+    ];
+    let mut r = Reader {
+        nodes,
+        ways,
+        ..Default::default()
+    };
+    r.count_nodes_uses().unwrap();
+
+    let ids: Vec<String> = r.edges().into_iter().map(|edge| edge.id).collect();
+    assert_eq!(vec!["10-0", "10-1", "20-0"], ids);
 }
 
 #[test]
