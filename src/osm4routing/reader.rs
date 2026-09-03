@@ -402,11 +402,15 @@ impl Reader {
     ///
     /// Filters out nodes that are not used by any edge (uses <= 1).
     fn nodes(&self) -> Vec<Node> {
-        self.nodes
+        let mut nodes: Vec<Node> = self
+            .nodes
             .values()
             .filter(|node| node.uses > 1)
             .copied()
-            .collect()
+            .collect();
+        // Hash map iteration order varies per process; callers index by position.
+        nodes.sort_unstable_by_key(|node| node.id.0);
+        nodes
     }
 
     /// Converts all ways to edges by splitting at intersections.
@@ -666,4 +670,16 @@ fn merging_edges() {
         .read(&"src/osm4routing/test_data/ways_to_merge.osm.pbf")
         .unwrap();
     assert_eq!(1, edges.len());
+}
+
+/// Reading the same file twice must give the same graph, node for node.
+#[test]
+fn test_read_is_deterministic() {
+    let first = read("src/osm4routing/test_data/minimal.osm.pbf").unwrap();
+    let second = read("src/osm4routing/test_data/minimal.osm.pbf").unwrap();
+
+    let ids =
+        |(nodes, _): &(Vec<Node>, Vec<Edge>)| nodes.iter().map(|n| n.id.0).collect::<Vec<_>>();
+    assert_eq!(ids(&first), ids(&second));
+    assert!(ids(&first).windows(2).all(|w| w[0] < w[1]), "sorted by id");
 }
